@@ -1,0 +1,12 @@
+[Unit]
+Description=Clean stale GNOME session state at boot
+Before=gdm.service
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/gnome-session-cleanup.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=graphical.target
