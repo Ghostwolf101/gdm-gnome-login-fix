@@ -31,6 +31,26 @@ The GNOME session opens and dies within 2–3 seconds. The culprit is stale sess
 
 ---
 
+## Common co-culprit: ibus-typing-booster
+
+If you're still hitting the loop after clearing the session targets, check whether `ibus-typing-booster` is installed:
+
+```bash
+rpm -q ibus-typing-booster
+```
+
+This package causes a second, stacked failure: it times out during `gnome-shell` init (`setCompletionEnabled → ibusManager.js → Gio.IOErrorEnum: Timeout`), which can mask the session-target error and make the loop appear to recur even after the fix.
+
+If you're using a plain US keyboard layout (`xkb:us`) — the default for most English installs — you don't need it:
+
+```bash
+sudo dnf remove ibus-typing-booster
+```
+
+The two failures are independent and can coexist. Fix both.
+
+---
+
 ## Instant fix
 
 From any TTY (`Ctrl+Alt+F3`), log in and run:
@@ -49,19 +69,47 @@ Switch back to the login screen with `Ctrl+Alt+F1`.
 
 Two layers. You want both.
 
-### Layer 1 — GDM PostSession script
+### Layer 1 — GDM PostSession + PreSession scripts
 
-Cleans up stuck targets on every normal logout or session crash. Prevents the loop from forming in the first place.
+Two hooks that bracket every login. PostSession fires on logout or session crash and clears stuck targets. PreSession fires before every login attempt as a fallback — if PostSession is ever skipped (power cut, misconfiguration), PreSession catches the stale state before the next login tries to use it.
+
+**Important:** `XDG_RUNTIME_DIR` must be set explicitly. GDM runs these scripts as root, so the user's D-Bus session bus is unreachable without it. The simpler `su - "$USER" -c "systemctl --user ..."` form silently does nothing.
+
+**PostSession:**
 
 ```bash
 sudo mkdir -p /etc/gdm/PostSession
 sudo tee /etc/gdm/PostSession/Default << 'EOF'
 #!/bin/bash
-su - "$USER" -c "systemctl --user stop graphical-session.target graphical-session-pre.target gnome-session.target" 2>/dev/null
+USER_ID=$(id -u "$USER" 2>/dev/null)
+if [ -n "$USER_ID" ] && [ -d "/run/user/$USER_ID" ]; then
+    XDG_RUNTIME_DIR="/run/user/$USER_ID" \
+    DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$USER_ID/bus" \
+    su "$USER" -s /bin/bash -c \
+      "systemctl --user stop graphical-session.target graphical-session-pre.target 2>/dev/null; systemctl --user reset-failed 2>/dev/null"
+fi
 pkill -u "$USER" gnome-session 2>/dev/null
 exit 0
 EOF
 sudo chmod +x /etc/gdm/PostSession/Default
+```
+
+**PreSession:**
+
+```bash
+sudo mkdir -p /etc/gdm/PreSession
+sudo tee /etc/gdm/PreSession/Default << 'EOF'
+#!/bin/bash
+USER_ID=$(id -u "$USER" 2>/dev/null)
+if [ -n "$USER_ID" ] && [ -d "/run/user/$USER_ID" ]; then
+    XDG_RUNTIME_DIR="/run/user/$USER_ID" \
+    DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$USER_ID/bus" \
+    su "$USER" -s /bin/bash -c \
+      "systemctl --user stop graphical-session.target graphical-session-pre.target 2>/dev/null; systemctl --user reset-failed 2>/dev/null"
+fi
+exit 0
+EOF
+sudo chmod +x /etc/gdm/PreSession/Default
 ```
 
 ### Layer 2 — Boot-time systemd service
