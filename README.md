@@ -3,7 +3,7 @@
 Fixes the "correct password, immediately kicked back to login screen" bug on Fedora with GDM.
 No reinstall. No data loss. Survives hard power cuts.
 
-Tested on: **Fedora 44, GNOME 47, GDM 47**
+Tested on: **Fedora 44, GNOME 47, GDM 47** — Intel + NVIDIA GTX 1050 Mobile (Optimus)
 
 ---
 
@@ -196,6 +196,71 @@ journalctl --since "today" -g "session opened|session closed|keyring|gnome-sessi
 ```
 
 The keyring logs showed `gnome-keyring-daemon started properly and unlocked keyring` — password mismatch was ruled out immediately. The session open/close timestamps 2 seconds apart pointed directly to the session target state issue, not authentication.
+
+---
+
+## NVIDIA / hybrid graphics (Intel + NVIDIA Optimus)
+
+If your system has an Intel integrated GPU and a discrete NVIDIA GPU, there is an additional failure mode: the open-source `nouveau` driver (and its newer successor `nova_core`) can load alongside the proprietary NVIDIA driver and conflict, causing GDM to fail during graphics initialization — which produces the exact same login-loop symptom.
+
+**Check if this applies to you:**
+
+```bash
+lspci | grep -i "vga\|3d\|display"
+lsmod | grep nouveau
+```
+
+If you see two GPUs (Intel + NVIDIA) and `nouveau` is loaded while the proprietary driver is installed, that's the conflict.
+
+**Fix — blacklist nouveau and nova_core in GRUB:**
+
+Edit your GRUB defaults:
+
+```bash
+sudo nano /etc/default/grub
+```
+
+Add to `GRUB_CMDLINE_LINUX`:
+
+```
+rd.driver.blacklist=nouveau,nova_core modprobe.blacklist=nouveau,nova_core
+```
+
+Example result:
+
+```
+GRUB_CMDLINE_LINUX="rd.luks.uuid=<your-uuid> rhgb quiet rd.driver.blacklist=nouveau,nova_core modprobe.blacklist=nouveau,nova_core"
+```
+
+Then regenerate the GRUB config and reboot:
+
+```bash
+sudo grub2-mkconfig -o /boot/grub2/grub.cfg
+sudo reboot
+```
+
+**Verify after reboot:**
+
+```bash
+lsmod | grep nouveau   # should return nothing
+lsmod | grep nvidia    # should show nvidia modules
+```
+
+---
+
+### nvidia-powerd error on GTX 10-series (expected, not a bug)
+
+If `nvidia-powerd` is enabled but fails with:
+
+```
+ERROR! Allocate Root client failed 0x59
+```
+
+This is **expected** on GTX 10xx (Pascal) mobile GPUs. The `nvidia-powerd` daemon only supports Ampere (30xx) and newer. The failure is harmless — it exits cleanly and does not affect display output. You can disable it if the noise bothers you:
+
+```bash
+sudo systemctl disable nvidia-powerd
+```
 
 ---
 
