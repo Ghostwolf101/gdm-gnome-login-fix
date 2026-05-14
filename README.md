@@ -199,6 +199,40 @@ The keyring logs showed `gnome-keyring-daemon started properly and unlocked keyr
 
 ---
 
+## Cloudflare WARP (and other services with BindsTo=graphical-session.target)
+
+This one is subtle and produces the exact same symptom — correct password, bounced back to login — even after the session-target and ibus fixes are in place.
+
+**The problem:** Any systemd user service that has `BindsTo=graphical-session.target` **and** is symlinked into `default.target.wants` will pull `graphical-session-pre.target` active before `gnome-session-init-worker` runs. The init-worker sees the target already active, treats it as "a graphical session is already running," hits a GLib assertion crash, and GDM bounces.
+
+Cloudflare WARP (`warp-desktop-svc`) ships with exactly this configuration. On a fresh Fedora 44 install with WARP and the GNOME session package regression, this stacks on top of the other failures and can produce dozens of crashes — the ABRT crash count on this machine was **31 over 3 days**.
+
+**Check if this applies to you:**
+
+```bash
+ls ~/.config/systemd/user/default.target.wants/ | grep warp
+# or more broadly:
+grep -r "BindsTo=graphical-session.target" ~/.config/systemd/user/ /usr/lib/systemd/user/ 2>/dev/null
+```
+
+If any service with `BindsTo=graphical-session.target` shows up under `default.target.wants`, it is a candidate.
+
+**Fix — move the symlink to graphical-session.target.wants:**
+
+```bash
+rm ~/.config/systemd/user/default.target.wants/warp-desktop-svc.service
+mkdir -p ~/.config/systemd/user/graphical-session.target.wants
+ln -sf /usr/lib/systemd/user/warp-desktop-svc.service \
+       ~/.config/systemd/user/graphical-session.target.wants/warp-desktop-svc.service
+systemctl --user daemon-reload
+```
+
+This starts WARP alongside the graphical session instead of before it — the dependency chain no longer races against `gnome-session-init-worker`.
+
+**For other services:** same pattern. Move the `default.target.wants` symlink to `graphical-session.target.wants` for any service that uses `BindsTo=graphical-session.target`.
+
+---
+
 ## NVIDIA / hybrid graphics (Intel + NVIDIA Optimus)
 
 If your system has an Intel integrated GPU and a discrete NVIDIA GPU, there is an additional failure mode: the open-source `nouveau` driver (and its newer successor `nova_core`) can load alongside the proprietary NVIDIA driver and conflict, causing GDM to fail during graphics initialization — which produces the exact same login-loop symptom.
